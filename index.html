@@ -13,12 +13,35 @@ html,body{margin:0;height:100%;background:#0f0c29;overflow:hidden;font-family:"N
 #linkb{margin-left:auto;font-size:12px;color:#8fd19e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .frame{position:absolute;top:46px;left:0;width:100%;height:calc(100% - 46px);border:0;display:none;background:#fff}
 .frame.on{display:block}
+#clrBtn{border-color:#ff8a80!important;color:#ffb4ab!important}
+#clrBtn:hover{background:rgba(255,107,107,.22)!important}
+#clrMask{position:fixed;inset:0;background:rgba(5,4,20,.78);display:none;align-items:center;justify-content:center;z-index:9999}
+#clrMask.on{display:flex}
+#clrBox{background:#1a1640;color:#fff;border:2px solid #FFD700;border-radius:14px;padding:24px 26px;width:min(92vw,460px);box-shadow:0 10px 40px rgba(0,0,0,.6)}
+#clrBox h3{margin:0 0 10px;font-size:20px;color:#FFD700}
+#clrBox p{margin:0 0 14px;font-size:14px;line-height:1.7;color:#d8d6ee}
+#clrBox .opt{display:block;width:100%;text-align:left;margin-top:10px;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.07);color:#fff;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
+#clrBox .opt small{display:block;font-weight:400;color:#aaa;margin-top:3px;font-size:12px}
+#clrBox .opt:hover{background:rgba(255,255,255,.16)}
+#clrBox .opt.danger{border-color:#ff8a80}
+#clrBox .opt.danger:hover{background:rgba(255,107,107,.25)}
+#clrBox .cancel{margin-top:14px;background:none;border:none;color:#aaa;font:inherit;font-size:13px;cursor:pointer;text-decoration:underline}
 </style>
 </head>
 <body>
+<div id="clrMask">
+  <div id="clrBox" role="dialog" aria-modal="true">
+    <h3>🧹 清空成績</h3>
+    <p>將清除「組別成績」、「個人加減分」，以及氣球遊戲的對抗賽成績。此動作無法復原。</p>
+    <button class="opt" id="clrScoresOnly">只清空成績（保留目前分組）<small>同一班想重新比賽時用</small></button>
+    <button class="opt danger" id="clrNewClass">換新班級：清空成績＋名單＋分組<small>清空後貼上新班級名單，再按「開始自動分組」</small></button>
+    <button class="cancel" id="clrCancel">取消</button>
+  </div>
+</div>
 <div id="tabs">
   <button id="tab-group" class="on">👥 分組與成績</button>
   <button id="tab-balloon">🎈 氣球遊戲</button>
+  <button id="clrBtn" title="清空所有成績，讓下一個班級使用">🧹 清空成績</button>
   <span id="linkb">🔗 兩個頁面已連線：氣球成績會直接記到「組別成績」</span>
 </div>
 <script>
@@ -34,6 +57,10 @@ const bus = {
     document.getElementById('linkb').textContent = '🔗 已連線 ・ 最近傳遞：' + what + '（' + t + '）';
   },
   async get(p){ return bus.snap(p); },
+  clear(prefix){ // 清掉某前綴的資料，並通知訂閱者「已無資料」
+    Object.keys(bus.store).filter(k => k.startsWith(prefix)).forEach(k => delete bus.store[k]);
+    Object.keys(bus.subs).filter(k => k.startsWith(prefix)).forEach(k => (bus.subs[k] || []).slice().forEach(f => { try { f(bus.snap(k)); } catch(e) { console.warn(e); } }));
+  },
   on(p, cb){
     (bus.subs[p] = bus.subs[p] || []).push(cb);
     if (p in bus.store) setTimeout(() => cb(bus.snap(p)), 0);
@@ -71,6 +98,50 @@ function show(which){
   const fr = which === 'group' ? fGroup : fBalloon;
   try { fr.contentWindow.dispatchEvent(new Event('resize')); fr.contentWindow.focus(); } catch(e) {}
 }
+// ── 🧹 清空成績（newClass=true：連名單與分組一起清掉，給下一個班級用）──
+function clearAllScores(newClass){
+  // 1) 分組頁：組別成績、個人加減分（換班時連名單與分組一併清掉）
+  try {
+    fGroup.contentWindow.eval(`
+      lastApplied = 0;
+      if (${newClass}) { groups = []; $('input').value = ''; $('warn').textContent = ''; $('linkWarn').textContent = ''; $('rosterNote').textContent = ''; rosterSig = ''; updatePreview(); }
+      else groups.forEach(g => { delete g.score; g.forEach(s => { delete s.pts; }); });
+      render();
+    `);
+  } catch(e) { console.warn('清空分組頁失敗', e); }
+
+  // 2) 傳遞中的資料：氣球成績（以及換班時的舊名單），避免舊成績又被自動套回新分組
+  bus.clear('teamScores');
+  if (newClass) bus.clear('teamRoster');
+  try {
+    Object.keys(localStorage).filter(k => k.startsWith('sf_team_scores_')).forEach(k => localStorage.removeItem(k));
+  } catch(e) {}
+
+  // 3) 氣球頁：結束對抗賽並清掉各組成績，回到主選單（換班時連組名與組員一起清掉）
+  try {
+    fBalloon.contentWindow.eval(`
+      resetTeamMatch(true);
+      if (${newClass}) { team.names = []; team.members = []; saveTeamCfg(); renderTeamConfig(); updateTeamBoard(); rosterNote(''); }
+    `);
+  } catch(e) { console.warn('清空氣球頁失敗', e); }
+
+  const t = new Date().toLocaleTimeString('zh-TW', { hour12:false });
+  document.getElementById('linkb').textContent = '🧹 ' + (newClass ? '已清空成績、名單與分組' : '已清空成績') + '（' + t + '）';
+  if (newClass) show('group');
+}
+(function(){
+  const mask = document.getElementById('clrMask');
+  const close = () => mask.classList.remove('on');
+  document.getElementById('clrBtn').onclick = () => mask.classList.add('on');
+  document.getElementById('clrCancel').onclick = close;
+  mask.addEventListener('click', e => { if (e.target === mask) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  document.getElementById('clrScoresOnly').onclick = () => { close(); clearAllScores(false); };
+  document.getElementById('clrNewClass').onclick = () => {
+    if (confirm('確定要換新班級嗎？\n目前的名單、分組與所有成績都會被清除，無法復原。')) { close(); clearAllScores(true); }
+  };
+})();
+
 document.getElementById('tab-group').onclick = () => show('group');
 document.getElementById('tab-balloon').onclick = () => show('balloon');
 show('group');
